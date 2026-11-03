@@ -24,9 +24,12 @@ declare -a BUILTIN_PRESETS=(
 )
 
 # 当前会话配置 (默认值)
+# 速率单位: Mbps (兆比特/秒), 跟宽带测速、面板带宽口径一致, 好换算。
+# curl/wget 的 --limit-rate 按字节/秒算, 所以内部换算: 1 Mbps = 125000 字节/秒。
+# 默认 16 Mbps = 2 MB/s, 等于改版前的默认 2M, 速度不变, 只是单位换了。
 SELECTED_NAME="未选择"
 SELECTED_URL=""
-RATE="2M"          # curl/wget 都认的格式: 100K / 500K / 1M / 2M / 5M / 10M
+RATE_MBPS="16"
 LOOP_MODE="infinite" # infinite | count | minutes
 LOOP_COUNT=0       # count 模式用
 LOOP_MINUTES=60    # minutes 模式用
@@ -61,16 +64,25 @@ show_config() {
   echo "---------------- 当前配置 ----------------"
   echo "下载源 : $SELECTED_NAME"
   [[ -n "$SELECTED_URL" ]] && echo "链接   : $SELECTED_URL"
-  echo "限速   : $RATE / 秒 (curl --limit-rate, 不占满带宽)"
+  if [[ "$RATE_MBPS" == "0" ]]; then
+    echo "限速   : 不限速 (不推荐, 会占满带宽)"
+  else
+    echo "限速   : ${RATE_MBPS} Mbps (约 $(awk -v m="$RATE_MBPS" 'BEGIN{printf "%g", m/8}') MB/s, curl/wget 内部换算为字节/秒)"
+  fi
   echo "循环   : $mode_text"
   echo "间隔   : 每轮间隔 ${INTERVAL} 秒"
   echo "落盘   : 不落盘, 直接输出到 /dev/null"
   echo "--------------------------------------------"
 }
 
-# 限速格式校验: 数字 + 可选 K/M, 如 500K 1M 2048K
-valid_rate() {
-  [[ "$1" =~ ^[0-9]+[KkMm]?$ ]]
+# 限速格式校验: Mbps, 整数或小数, 如 2 / 2.5 / 16 / 100
+valid_mbps() {
+  [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]
+}
+
+# Mbps -> curl/wget 用的字节/秒: 1 Mbps = 1000000 bit/s / 8 = 125000 Byte/s
+mbps_to_bytes() {
+  awk -v m="$1" 'BEGIN{printf "%.0f", m*125000}'
 }
 
 # ---------- 预设管理 ----------
@@ -164,39 +176,41 @@ choose_source() {
   done
 }
 
-# ---------- 设置限速 ----------
+# ---------- 设置限速 (单位 Mbps) ----------
 choose_rate() {
   while true; do
     clear
-    echo "========== 选择固定速率 =========="
-    echo "当前: $RATE / 秒"
-    echo "  1) 100K / 秒  (最省, 挂机拉底量)"
-    echo "  2) 500K / 秒"
-    echo "  3) 1M   / 秒"
-    echo "  4) 2M   / 秒  (推荐, 既有流量又不影响正常用网)"
-    echo "  5) 5M   / 秒"
-    echo "  6) 10M  / 秒"
-    echo "  7) 不限速 (不推荐, 会占满带宽)"
-    echo "  c) 自定义, 如 300K / 1536K / 3M"
+    echo "========== 选择固定速率 (Mbps) =========="
+    if [[ "$RATE_MBPS" == "0" ]]; then echo "当前: 不限速"; else echo "当前: ${RATE_MBPS} Mbps (约 $(awk -v m="$RATE_MBPS" 'BEGIN{printf "%g", m/8}') MB/s)"; fi
+    echo "  1) 2 Mbps   (最省, 挂机拉底量, 约 0.25 MB/s)"
+    echo "  2) 5 Mbps   (约 0.625 MB/s)"
+    echo "  3) 10 Mbps  (约 1.25 MB/s)"
+    echo "  4) 16 Mbps  (推荐, 约 2 MB/s, 等于旧默认 2M)"
+    echo "  5) 20 Mbps  (约 2.5 MB/s)"
+    echo "  6) 50 Mbps  (约 6.25 MB/s)"
+    echo "  7) 100 Mbps (约 12.5 MB/s)"
+    echo "  8) 不限速 (不推荐, 会占满带宽)"
+    echo "  c) 自定义, 如 2.5 / 30, 单位就是 Mbps"
     echo "  0) 返回"
-    echo "=================================="
+    echo "=========================================="
     read -rp "请选择: " ch
     case "$ch" in
       0) return ;;
-      1) RATE="100K" ;;
-      2) RATE="500K" ;;
-      3) RATE="1M" ;;
-      4) RATE="2M" ;;
-      5) RATE="5M" ;;
-      6) RATE="10M" ;;
-      7) RATE="0" ;;
+      1) RATE_MBPS="2" ;;
+      2) RATE_MBPS="5" ;;
+      3) RATE_MBPS="10" ;;
+      4) RATE_MBPS="16" ;;
+      5) RATE_MBPS="20" ;;
+      6) RATE_MBPS="50" ;;
+      7) RATE_MBPS="100" ;;
+      8) RATE_MBPS="0" ;;
       c|C)
-        read -rp "输入速率 (如 300K / 2M): " r
-        if valid_rate "$r"; then RATE="$r"; else echo "格式不对, 如 500K 或 2M"; pause; continue; fi
+        read -rp "输入速率, 单位 Mbps (如 2.5 / 30): " r
+        if valid_mbps "$r"; then RATE_MBPS="$r"; else echo "格式不对, 只要数字, 如 2.5"; pause; continue; fi
         ;;
       *) echo "无效选择"; pause; continue ;;
     esac
-    echo "已设为: $RATE / 秒"
+    if [[ "$RATE_MBPS" == "0" ]]; then echo "已设为: 不限速"; else echo "已设为: ${RATE_MBPS} Mbps (约 $(awk -v m="$RATE_MBPS" 'BEGIN{printf "%g", m/8}') MB/s)"; fi
     pause; return
   done
 }
@@ -251,6 +265,12 @@ run_loop() {
   echo "开始时间: $(date '+%Y-%m-%d %H:%M:%S')"
   echo "=================================="
 
+  # Mbps 换算一次, 后面每轮直接用字节/秒, 避免每轮重复算
+  local limit_bytes=""
+  if [[ "$RATE_MBPS" != "0" ]]; then
+    limit_bytes=$(mbps_to_bytes "$RATE_MBPS")
+  fi
+
   local round=0 total_bytes=0 start_ts end_ts
   start_ts=$(date +%s)
   end_ts=$((start_ts + LOOP_MINUTES * 60))
@@ -266,22 +286,28 @@ run_loop() {
 
     local round_start round_size
     round_start=$(date +%s)
-    echo "[第 $round 轮] $(date '+%H:%M:%S') 开始, 限速 $RATE/s"
+    if [[ "$RATE_MBPS" == "0" ]]; then
+      echo "[第 $round 轮] $(date '+%H:%M:%S') 开始, 不限速"
+    else
+      echo "[第 $round 轮] $(date '+%H:%M:%S') 开始, 限速 ${RATE_MBPS} Mbps"
+    fi
     echo "  链接: $SELECTED_URL"
 
     if has_cmd curl; then
-      # -L 跟随跳转(官网链接常跳转到CDN), --limit-rate 固定速率
+      # -L 跟随跳转(官网链接常跳转到CDN), --limit-rate 按字节/秒, 已由 Mbps 换算好
       # -o /dev/null 不落盘, -w 输出本轮下载字节数
-      if [[ "$RATE" == "0" ]]; then
+      if [[ "$RATE_MBPS" == "0" ]]; then
         round_size=$(curl -L -A "$UA" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
       else
-        round_size=$(curl -L -A "$UA" --limit-rate "$RATE" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
+        round_size=$(curl -L -A "$UA" --limit-rate "$limit_bytes" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
       fi
     else
-      # wget 备用: --limit-rate 后面要带单位, 0 表示不限
-      local wrate="$RATE"
-      [[ "$RATE" == "0" ]] && wrate="0"
-      wget -q -O /dev/null --limit-rate="$wrate" --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+      # wget 备用: --limit-rate 按字节/秒, 0 表示不限
+      if [[ "$RATE_MBPS" == "0" ]]; then
+        wget -q -O /dev/null --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+      else
+        wget -q -O /dev/null --limit-rate="$limit_bytes" --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+      fi
       round_size=0  # wget 不方便直接取字节数, 本轮计 0, 只看轮数
     fi
     [[ -z "$round_size" ]] && round_size=0
@@ -316,7 +342,11 @@ while true; do
   show_config
   echo
   echo "  1) 选择下载源 (预设 / 自填链接)"
-  echo "  2) 选择固定速率 (当前 $RATE/s)"
+  if [[ "$RATE_MBPS" == "0" ]]; then
+    echo "  2) 选择固定速率 (当前 不限速)"
+  else
+    echo "  2) 选择固定速率 (当前 ${RATE_MBPS} Mbps)"
+  fi
   echo "  3) 设置循环模式 / 间隔"
   echo "  4) 开始下载"
   echo "  5) 管理预设链接"
