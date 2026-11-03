@@ -61,10 +61,6 @@ chmod +x loop_download.sh
 # 手动装一键命令: sudo cp loop_download.sh /usr/local/bin/loopdl && sudo chmod +x /usr/local/bin/loopdl
 ```
 
-> 为什么国内不要用 raw？国内服务器直连 `raw.githubusercontent.com` 常报 `curl: (35) Recv failure: Connection reset by peer`，文件根本没下载下来，后面的 `chmod` / `./loop_download.sh` 自然报 `No such file or directory`。这不是脚本的问题，是下载源被重置了。国内那句走的是 jsDelivr，实测国内机器能用。`install.sh` 本身还会按 jsDelivr → fastly → gcore → ghproxy → raw 的顺序挨个试，并校验下载到的确实是脚本（不是代理返回的 HTML），一个不行自动换下一个。
->
-> 另外一个坑：jsDelivr @main 缓存经常还是旧版，旧版面板里没有菜单 6、没有国内预设，但装完看起来又像成功了。现在 `install.sh` 会按版本号校验（当前 `1.5.4`，面板顶部也显示版本），旧版缓存会被直接跳过，继续试下一个镜像，直到 raw。国外机器能直连 raw，所以用国外命令重装一定能拿到新版；国内机器不要用 @main，要用 @v1.5.4 这种 tag 版，tag 是新路径，不命中 @main 旧缓存。判断是不是新版很简单：进面板看顶部版本是不是 `1.5.4`，有没有菜单 6 和国内预设。
-
 菜单：
 
 ```
