@@ -3,8 +3,10 @@
 # 用途: 以固定速率循环下载大文件, 产生稳定的下行流量, 不占满带宽, 不占磁盘
 # 原理: 每次下载都输出到 /dev/null, 下载完删不删都一样, 循环下一轮
 # 适用: 任意直链, 包括官网的荣耀安装包 / 驱动 / 系统镜像等, 也支持自填链接
-# 依赖: curl (优先) 或 wget, bash 4+
+# 依赖: curl (优先) 或 wget, bash 4+, awk (Debian 默认的 mawk 也行)
+# 支持: 主流 Linux 发行版 Ubuntu / Debian / CentOS / RHEL / Rocky / AlmaLinux / Fedora, amd64/arm64
 # 用法: chmod +x loop_download.sh && ./loop_download.sh
+# 注意: 国内服务器不要用 raw.githubusercontent.com 下载本脚本, 容易被重置, 用 install.sh 或 jsDelivr (见 README)。
 
 set -u
 
@@ -332,8 +334,19 @@ run_loop() {
 }
 
 # ---------- 主菜单 ----------
+# 主流发行版缺 curl 时的安装提示: Ubuntu/Debian 用 apt, RHEL 系用 dnf/yum。
 if ! has_cmd curl && ! has_cmd wget; then
   echo "警告: 未检测到 curl/wget, 请先安装 curl 再运行。"
+  if has_cmd apt-get; then
+    echo "  Ubuntu/Debian: sudo apt update && sudo apt install -y curl"
+  elif has_cmd dnf; then
+    echo "  RHEL/Rocky/AlmaLinux/Fedora: sudo dnf install -y curl"
+  elif has_cmd yum; then
+    echo "  CentOS/RHEL(老版): sudo yum install -y curl"
+  else
+    echo "  请用你发行版的包管理器安装 curl。"
+  fi
+  echo "  或者直接用安装脚本, 它会自动装 curl 并走镜像下载: 见 README 快速开始。"
 fi
 
 while true; do

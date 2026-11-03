@@ -10,13 +10,24 @@
 
 ## 快速开始
 
+支持主流 Linux：Ubuntu / Debian / CentOS / RHEL / Rocky / AlmaLinux / Fedora，amd64 / arm64。
+
+**推荐：用安装脚本（自动装 curl、自动换镜像，国内服务器也行）**
+
 ```bash
-curl -LO https://raw.githubusercontent.com/emmaforge/loop-download/main/loop_download.sh
+curl -fsSL https://cdn.jsdelivr.net/gh/emmaforge/loop-download@main/install.sh | bash
+./loop_download.sh
+```
+
+**或者只下载脚本（走 jsDelivr，别走 raw）：**
+
+```bash
+curl -LO https://cdn.jsdelivr.net/gh/emmaforge/loop-download@main/loop_download.sh
 chmod +x loop_download.sh
 ./loop_download.sh
 ```
 
-或者用 git：
+**或者用 git：**
 
 ```bash
 git clone https://github.com/emmaforge/loop-download.git
@@ -24,6 +35,8 @@ cd loop-download
 chmod +x loop_download.sh
 ./loop_download.sh
 ```
+
+> 为什么不要用 raw？国内服务器直连 `raw.githubusercontent.com` 常报 `curl: (35) Recv failure: Connection reset by peer`，文件根本没下载下来，后面的 `chmod` / `./loop_download.sh` 自然报 `No such file or directory`。这不是脚本的问题，是下载源被重置了。`install.sh` 会按 jsDelivr → fastly → gcore → ghproxy → raw 的顺序挨个试，并校验下载到的确实是脚本（不是代理返回的 HTML），一个不行自动换下一个。
 
 菜单：
 
@@ -41,7 +54,7 @@ chmod +x loop_download.sh
 - **自填荣耀安装包链接**：荣耀官网的下载链接常带 token、会过期，不要硬编码。去下载页右键下载按钮 → 复制链接地址 → 菜单选 `1` → `c` 自填 → 粘贴，选 `y` 保存为预设即可。
 - **循环模式**：无限循环（Ctrl+C 停止）、固定轮数、固定时长（分钟）三种，每轮默认间隔 3 秒，可改，避免一直 hammer 服务器。
 - **预设保存位置**：自定义预设存在 `~/.config/loop_download/presets.txt`，换机器把这个文件拷过去就行。
-- **依赖**：`curl`（优先）或 `wget`，`bash`。
+- **依赖**：`curl`（优先）或 `wget`，`bash`，`awk`。缺 curl 时，`install.sh` 会按发行版自动装：Ubuntu/Debian 用 `apt`，RHEL/Rocky/AlmaLinux/Fedora 用 `dnf`，老 CentOS 用 `yum`。
 
 ## 注意事项
 
