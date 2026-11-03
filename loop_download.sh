@@ -7,13 +7,20 @@
 # 支持: 主流 Linux 发行版 Ubuntu / Debian / CentOS / RHEL / Rocky / AlmaLinux / Fedora, amd64/arm64
 # 用法: chmod +x loop_download.sh && ./loop_download.sh
 # 一键呼出 (用 install.sh 装过后, 任意目录都行): loopdl
+# 停止后台任务: 菜单 6, 或在别的终端打 loopdl stop (查看状态: loopdl status, 看日志: loopdl log)
 # 注意: 国内服务器不要用 raw.githubusercontent.com 下载本脚本, 容易被重置, 用 install.sh 或 jsDelivr (见 README)。
 
 set -u
 
 # ---------- 配置 ----------
-PRESET_FILE="${HOME}/.config/loop_download/presets.txt"
-mkdir -p "$(dirname "$PRESET_FILE")" 2>/dev/null || true
+CONFIG_DIR="${HOME}/.config/loop_download"
+PRESET_FILE="${CONFIG_DIR}/presets.txt"
+PID_FILE="${CONFIG_DIR}/loop_download.pid"
+LOG_FILE="${CONFIG_DIR}/loop_download.log"
+RUN_CONF="${CONFIG_DIR}/run.conf"
+mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+# 后台任务用: 本脚本自己的路径, start_background 靠它拉起 worker
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 
 # 内置预设: 名字|链接
 # 注意: 荣耀官网的下载链接经常带 token / 会过期, 不要硬编码一个会失效的链接。
@@ -83,6 +90,11 @@ show_config() {
   echo "循环   : $mode_text"
   echo "间隔   : 每轮间隔 ${INTERVAL} 秒"
   echo "落盘   : 不落盘, 直接输出到 /dev/null"
+  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE" 2>/dev/null || echo 0)" 2>/dev/null; then
+    echo "后台任务: 运行中 (PID $(cat "$PID_FILE"), 菜单 6 或 loopdl stop 可停)"
+  else
+    echo "后台任务: 未运行"
+  fi
   echo "--------------------------------------------"
 }
 
@@ -94,6 +106,167 @@ valid_mbps() {
 # Mbps -> curl/wget 用的字节/秒: 1 Mbps = 1000000 bit/s / 8 = 125000 Byte/s
 mbps_to_bytes() {
   awk -v m="$1" 'BEGIN{printf "%.0f", m*125000}'
+}
+
+# ---------- 后台任务: 启动 / 停止 / 状态 ----------
+# 为什么要后台: 前台跑的时候菜单被占住, 想停只能 Ctrl+C, 关了终端就没法从别处停。
+# 后台跑起来后, 面板回到菜单, 菜单 6 能停, 别的终端打 loopdl stop 也能停,
+# 日志在 $LOG_FILE, PID 在 $PID_FILE。
+is_running() {
+  [[ -f "$PID_FILE" ]] || return 1
+  local p; p="$(cat "$PID_FILE" 2>/dev/null || echo "")"
+  [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null
+}
+
+save_run_conf() {
+  {
+    printf 'SELECTED_NAME=%q\n' "$SELECTED_NAME"
+    printf 'SELECTED_URL=%q\n' "$SELECTED_URL"
+    printf 'RATE_MBPS=%q\n' "$RATE_MBPS"
+    printf 'LOOP_MODE=%q\n' "$LOOP_MODE"
+    printf 'LOOP_COUNT=%q\n' "$LOOP_COUNT"
+    printf 'LOOP_MINUTES=%q\n' "$LOOP_MINUTES"
+    printf 'INTERVAL=%q\n' "$INTERVAL"
+  } > "$RUN_CONF"
+}
+
+show_task_status() {
+  if is_running; then
+    echo "后台任务: 运行中, PID $(cat "$PID_FILE")"
+    if [[ -f "$RUN_CONF" ]]; then
+      # 子 shell 里 source, 不影响面板当前会话, 且中文能正常显示 (run.conf 里 %q 转义过的中文直接 grep 会很难看)
+      ( . "$RUN_CONF" 2>/dev/null; echo "下载源: $SELECTED_NAME"; echo "链接: $SELECTED_URL"; echo "限速: ${RATE_MBPS} Mbps, 循环: $LOOP_MODE" )
+    fi
+  else
+    [[ -f "$PID_FILE" ]] && rm -f "$PID_FILE"
+    echo "后台任务: 未运行"
+  fi
+  if [[ -f "$LOG_FILE" ]]; then
+    echo "--- 最近日志 ($LOG_FILE, 最后 20 行) ---"
+    tail -20 "$LOG_FILE"
+  else
+    echo "还没有日志文件。"
+  fi
+}
+
+stop_task() {
+  if ! is_running; then
+    [[ -f "$PID_FILE" ]] && rm -f "$PID_FILE"
+    echo "没有后台下载任务在跑。"
+    return 1
+  fi
+  local pid; pid="$(cat "$PID_FILE")"
+  echo "正在停止后台任务 PID $pid ..."
+  # 先停整个进程组 (worker + 它正在跑的 curl), 再停主进程和子进程, 防止只杀壳留 curl 继续跑
+  kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  pkill -TERM -P "$pid" 2>/dev/null || true
+  local i
+  for i in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "还在跑, 强制结束..."
+    kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    pkill -KILL -P "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  rm -f "$PID_FILE"
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "停止失败, PID $pid 还在, 请手动: kill -9 $pid"
+    return 1
+  fi
+  echo "已停止。"
+  return 0
+}
+
+start_background() {
+  if [[ -z "$SELECTED_URL" ]]; then
+    echo "先选一个下载源 (菜单 1)。"
+    pause; return
+  fi
+  if ! has_cmd curl && ! has_cmd wget; then
+    echo "没找到 curl 或 wget, 先装一个: sudo apt install curl / yum install curl"
+    pause; return
+  fi
+  if is_running; then
+    echo "已经有一个后台任务在跑 (PID $(cat "$PID_FILE")), 先用菜单 6 停了它再开新的。"
+    pause; return
+  fi
+  save_run_conf
+  echo "后台任务启动: $(date '+%Y-%m-%d %H:%M:%S')" > "$LOG_FILE"
+  echo "下载源: $SELECTED_NAME ($SELECTED_URL)" >> "$LOG_FILE"
+  echo "限速: ${RATE_MBPS} Mbps, 循环: $LOOP_MODE" >> "$LOG_FILE"
+  if has_cmd setsid; then
+    setsid nohup "$SCRIPT_PATH" --worker >> "$LOG_FILE" 2>&1 < /dev/null &
+  else
+    nohup "$SCRIPT_PATH" --worker >> "$LOG_FILE" 2>&1 < /dev/null &
+  fi
+  local pid=$!
+  echo "$pid" > "$PID_FILE"
+  sleep 1
+  if is_running; then
+    echo "已在后台启动, PID $pid, 日志: $LOG_FILE"
+    echo "想停的时候: 回面板选 6, 或在别的终端打 loopdl stop (不用进面板也行)。"
+  else
+    echo "启动失败, 看日志:"
+    tail -20 "$LOG_FILE" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+  pause
+}
+
+# 后台 worker: 不进菜单, 只循环下载写日志, 被 stop_task 杀掉时清理 PID 文件。
+worker_loop() {
+  if [[ -f "$RUN_CONF" ]]; then
+    # shellcheck disable=SC1090
+    . "$RUN_CONF"
+  fi
+  if [[ -z "${SELECTED_URL:-}" ]]; then
+    echo "worker: 没有下载链接, 退出。"
+    exit 1
+  fi
+  local limit_bytes=""
+  if [[ "$RATE_MBPS" != "0" ]]; then
+    limit_bytes=$(mbps_to_bytes "$RATE_MBPS")
+  fi
+  local round=0 total_bytes=0 start_ts end_ts
+  start_ts=$(date +%s)
+  end_ts=$((start_ts + LOOP_MINUTES * 60))
+  trap 'echo "[$(date "+%Y-%m-%d %H:%M:%S")] 已停止: 共 $round 轮, 累计约 $((total_bytes/1024/1024)) MB"; rm -f "$PID_FILE"; exit 0' TERM INT
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] worker 启动, 限速 ${RATE_MBPS} Mbps"
+  while true; do
+    round=$((round+1))
+    if [[ "$LOOP_MODE" == "count" ]] && (( round > LOOP_COUNT )); then break; fi
+    if [[ "$LOOP_MODE" == "minutes" ]] && (( $(date +%s) >= end_ts )); then break; fi
+    local round_start round_size
+    round_start=$(date +%s)
+    echo "[第 $round 轮] $(date '+%H:%M:%S') 开始, 限速 ${RATE_MBPS} Mbps, 链接: $SELECTED_URL"
+    if has_cmd curl; then
+      if [[ "$RATE_MBPS" == "0" ]]; then
+        round_size=$(curl -L -A "$UA" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
+      else
+        round_size=$(curl -L -A "$UA" --limit-rate "$limit_bytes" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
+      fi
+    else
+      if [[ "$RATE_MBPS" == "0" ]]; then
+        wget -q -O /dev/null --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+      else
+        wget -q -O /dev/null --limit-rate="$limit_bytes" --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+      fi
+      round_size=0
+    fi
+    [[ -z "$round_size" ]] && round_size=0
+    [[ "$round_size" =~ ^[0-9]+$ ]] || round_size=0
+    total_bytes=$((total_bytes + round_size))
+    echo "  本轮完成: 约 $((round_size/1024/1024)) MB, 用时 $(( $(date +%s) - round_start ))s, 累计约 $((total_bytes/1024/1024)) MB"
+    if [[ "$LOOP_MODE" == "count" ]] && (( round >= LOOP_COUNT )); then break; fi
+    if [[ "$LOOP_MODE" == "minutes" ]] && (( $(date +%s) >= end_ts )); then break; fi
+    sleep "$INTERVAL"
+  done
+  trap - TERM INT
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] worker 正常结束: 共 $round 轮, 累计约 $((total_bytes/1024/1024)) MB"
+  rm -f "$PID_FILE"
 }
 
 # ---------- 预设管理 ----------
@@ -231,7 +404,7 @@ choose_loop() {
   while true; do
     clear
     echo "========== 循环模式 =========="
-    echo "  1) 无限循环, 直到 Ctrl+C 停止"
+    echo "  1) 无限循环, 直到停止 (后台: 菜单 6 / loopdl stop, 前台: Ctrl+C)"
     echo "  2) 固定轮数"
     echo "  3) 固定时长 (分钟)"
     echo "  4) 设置每轮间隔 (当前 ${INTERVAL} 秒)"
@@ -342,6 +515,21 @@ run_loop() {
   pause
 }
 
+# ---------- 命令行子命令 (不用进面板也能停) ----------
+# loopdl stop / status / log: 给别的终端用的, 面板被下载占住时也能停。
+# --worker: 后台 worker 专用, 不要手动打。
+case "${1:-}" in
+  stop) stop_task; exit $? ;;
+  status) show_task_status; exit 0 ;;
+  log)
+    if [[ -f "$LOG_FILE" ]]; then tail -50 "$LOG_FILE"; else echo "还没有日志文件。"; fi
+    exit 0
+    ;;
+  --worker) worker_loop; exit $? ;;
+  "") ;;
+  *) echo "用法: loopdl [stop|status|log]"; echo "  不带参数进面板, stop 停后台任务, status 看状态, log 看日志"; exit 1 ;;
+esac
+
 # ---------- 主菜单 ----------
 # 主流发行版缺 curl 时的安装提示: Ubuntu/Debian 用 apt, RHEL 系用 dnf/yum。
 if ! has_cmd curl && ! has_cmd wget; then
@@ -370,17 +558,23 @@ while true; do
     echo "  2) 选择固定速率 (当前 ${RATE_MBPS} Mbps)"
   fi
   echo "  3) 设置循环模式 / 间隔"
-  echo "  4) 开始下载"
+  echo "  4) 开始下载 (后台运行, 回菜单后可用 6 停止)"
   echo "  5) 管理预设链接"
+  echo "  6) 停止下载任务"
+  echo "  7) 查看后台任务状态和日志"
+  echo "  8) 开始下载 (前台运行, 按 Ctrl+C 停止)"
   echo "  0) 退出"
   echo "=================================="
-  read -rp "请选择 [0-5]: " choice
+  read -rp "请选择 [0-8]: " choice
   case "$choice" in
     1) choose_source ;;
     2) choose_rate ;;
     3) choose_loop ;;
-    4) run_loop ;;
+    4) start_background ;;
     5) manage_presets ;;
+    6) stop_task; pause ;;
+    7) show_task_status; pause ;;
+    8) run_loop ;;
     0) echo "退出, 再见。"; exit 0 ;;
     *) echo "无效选择"; pause ;;
   esac
