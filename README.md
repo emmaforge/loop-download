@@ -11,6 +11,16 @@
 ## 快速开始
 
 ```bash
+curl -LO https://raw.githubusercontent.com/emmaforge/loop-download/main/loop_download.sh
+chmod +x loop_download.sh
+./loop_download.sh
+```
+
+或者用 git：
+
+```bash
+git clone https://github.com/emmaforge/loop-download.git
+cd loop-download
 chmod +x loop_download.sh
 ./loop_download.sh
 ```
