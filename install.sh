@@ -6,7 +6,8 @@
 # 2. 主流 Linux 发行版适配: Ubuntu / Debian / CentOS / RHEL / Rocky / AlmaLinux / Fedora,
 #    amd64 / arm64, 缺 curl 时按发行版自动用 apt / dnf / yum 装。
 # 用法 (分国内 / 国外, 装完都是一键呼出命令 loopdl):
-#   国内: curl -fsSL https://cdn.jsdelivr.net/gh/emmaforge/loop-download@main/install.sh | bash
+#   国内: curl -fsSL https://cdn.jsdelivr.net/gh/emmaforge/loop-download@v1.5.1/install.sh | bash
+#         (必须用 @v1.5.1 这种 tag 版, @main 的 jsDelivr 缓存还是旧版, 装完会没有菜单 6 / 国内预设)
 #   国外: curl -fsSL https://raw.githubusercontent.com/emmaforge/loop-download/main/install.sh | bash
 #   装完呼出面板 (任意目录): loopdl
 #   没装全局命令时, 在下载目录跑: ./loop_download.sh
@@ -18,9 +19,11 @@ FILE="loop_download.sh"
 TARGET="./${FILE}"
 GLOBAL_CMD="/usr/local/bin/loopdl"
 # 期望的脚本版本, 必须跟 loop_download.sh 里的 LOOPDL_VERSION 一致, 改脚本时同步改。
-# 用途: jsDelivr 缓存经常还是旧版, 旧版也有 RATE_MBPS, 光查那个拦不住。
+# 用途: jsDelivr @main 缓存经常还是旧版, 旧版也有 RATE_MBPS, 光查那个拦不住。
 # 现在要求下载到的文件必须带这个版本号, 旧版缓存会被跳过, 继续试下一个镜像 (最后是 raw, 国外能直连 raw 就一定能拿到新版)。
-EXPECTED_VERSION="1.5"
+# 另外: jsDelivr @vX.Y.Z 这种带 tag 的路径是新路径, 第一次请求就从 GitHub 现取, 不会命中 @main 的旧缓存,
+# 所以国内安装命令要用 @v1.5.1 这种 tag 版 install.sh, 并且下面镜像列表先试 @v1.5.1, 国内不用 raw 也能拿到新版。
+EXPECTED_VERSION="1.5.1"
 
 # ---------- 系统检测 (主流发行版) ----------
 OS_ID="unknown"; OS_NAME="unknown"; ARCH="$(uname -m 2>/dev/null || echo unknown)"
@@ -66,8 +69,12 @@ if ! has_cmd curl && ! has_cmd wget; then
 fi
 
 # ---------- 多镜像下载, 一个不行换下一个 ----------
-# 顺序有讲究: jsDelivr 在国内一般能通, 放最前; raw 放最后, 因为它最容易被重置。
+# 顺序有讲究: 先试带 tag 的 jsDelivr (@v1.5.1 是新路径, 不命中 @main 旧缓存, 国内能通),
+# 再试 @main 的 jsDelivr, 最后试 raw (raw 最容易被重置, 放最后, 国外能直连 raw 就一定能拿到新版)。
 MIRRORS=(
+  "https://cdn.jsdelivr.net/gh/${REPO}@v${EXPECTED_VERSION}/${FILE}"
+  "https://fastly.jsdelivr.net/gh/${REPO}@v${EXPECTED_VERSION}/${FILE}"
+  "https://gcore.jsdelivr.net/gh/${REPO}@v${EXPECTED_VERSION}/${FILE}"
   "https://cdn.jsdelivr.net/gh/${REPO}@main/${FILE}"
   "https://fastly.jsdelivr.net/gh/${REPO}@main/${FILE}"
   "https://gcore.jsdelivr.net/gh/${REPO}@main/${FILE}"

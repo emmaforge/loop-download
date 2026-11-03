@@ -15,7 +15,7 @@ set -u
 # 版本号: 每次改脚本就改这里, install.sh 靠它识别是不是最新版,
 # 防止 jsDelivr 缓存的旧版被当成新版装上 (旧版没有 stop_task 和国内预设, 但也有 RATE_MBPS, 光查 RATE_MBPS 拦不住旧版)。
 # 改脚本时必须同步改 install.sh 里的 EXPECTED_VERSION, 保持一致。
-LOOPDL_VERSION="1.5"
+LOOPDL_VERSION="1.5.1"
 
 # ---------- 配置 ----------
 CONFIG_DIR="${HOME}/.config/loop_download"

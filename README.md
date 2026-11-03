@@ -22,15 +22,17 @@ loopdl
 
 ### 国内机器
 
+**必须用 tag 版，不能用 @main 版**：@main 的 jsDelivr 缓存还是旧版，装完会没有菜单 6 / 国内预设。tag 版是新路径，第一次请求就从 GitHub 现取，不命中旧缓存。
+
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/emmaforge/loop-download@main/install.sh | bash
+curl -fsSL https://cdn.jsdelivr.net/gh/emmaforge/loop-download@v1.5.1/install.sh | bash
 loopdl
 ```
 
-只下载脚本的话，也走 jsDelivr，别走 raw：
+只下载脚本的话，也走 tag 版 jsDelivr，别走 @main / raw：
 
 ```bash
-curl -LO https://cdn.jsdelivr.net/gh/emmaforge/loop-download@main/loop_download.sh
+curl -LO https://cdn.jsdelivr.net/gh/emmaforge/loop-download@v1.5.1/loop_download.sh
 chmod +x loop_download.sh
 ./loop_download.sh
 # 手动装一键命令: sudo cp loop_download.sh /usr/local/bin/loopdl && sudo chmod +x /usr/local/bin/loopdl
@@ -61,7 +63,7 @@ chmod +x loop_download.sh
 
 > 为什么国内不要用 raw？国内服务器直连 `raw.githubusercontent.com` 常报 `curl: (35) Recv failure: Connection reset by peer`，文件根本没下载下来，后面的 `chmod` / `./loop_download.sh` 自然报 `No such file or directory`。这不是脚本的问题，是下载源被重置了。国内那句走的是 jsDelivr，实测国内机器能用。`install.sh` 本身还会按 jsDelivr → fastly → gcore → ghproxy → raw 的顺序挨个试，并校验下载到的确实是脚本（不是代理返回的 HTML），一个不行自动换下一个。
 >
-> 另外一个坑：jsDelivr 缓存经常还是旧版，旧版面板里没有菜单 6、没有国内预设，但装完看起来又像成功了。现在 `install.sh` 会按版本号校验（当前 `1.5`，面板顶部也显示版本），旧版缓存会被直接跳过，继续试下一个镜像，直到 raw。国外机器能直连 raw，所以用国外命令重装一定能拿到新版；国内机器如果 raw 被重置，就只能等 jsDelivr 缓存刷新后再重装。判断是不是新版很简单：进面板看顶部版本是不是 `1.5`，有没有菜单 6 和国内预设。
+> 另外一个坑：jsDelivr @main 缓存经常还是旧版，旧版面板里没有菜单 6、没有国内预设，但装完看起来又像成功了。现在 `install.sh` 会按版本号校验（当前 `1.5.1`，面板顶部也显示版本），旧版缓存会被直接跳过，继续试下一个镜像，直到 raw。国外机器能直连 raw，所以用国外命令重装一定能拿到新版；国内机器不要用 @main，要用 @v1.5.1 这种 tag 版，tag 是新路径，不命中 @main 旧缓存。判断是不是新版很简单：进面板看顶部版本是不是 `1.5.1`，有没有菜单 6 和国内预设。
 
 菜单：
 
