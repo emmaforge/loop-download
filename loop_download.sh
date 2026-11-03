@@ -15,7 +15,7 @@ set -u
 # 版本号: 每次改脚本就改这里, install.sh 靠它识别是不是最新版,
 # 防止 jsDelivr 缓存的旧版被当成新版装上 (旧版没有 stop_task 和国内预设, 但也有 RATE_MBPS, 光查 RATE_MBPS 拦不住旧版)。
 # 改脚本时必须同步改 install.sh 里的 EXPECTED_VERSION, 保持一致。
-LOOPDL_VERSION="1.5.1"
+LOOPDL_VERSION="1.5.2"
 
 # ---------- 配置 ----------
 CONFIG_DIR="${HOME}/.config/loop_download"
@@ -41,6 +41,7 @@ declare -a BUILTIN_PRESETS=(
   "国内-华为云 Ubuntu 24.04.5.1 ISO(约6.25GB)|https://mirrors.huaweicloud.com/ubuntu-releases/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
   "国内-网易 Ubuntu 24.04.5.1 ISO(约6.25GB)|https://mirrors.163.com/ubuntu-releases/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
   "国内-清华 Ubuntu 22.04.5 ISO(约4.76GB)|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/22.04/ubuntu-22.04.5-desktop-amd64.iso"
+  "国外-Cloudflare测速10MB(低速率测试, 2Mbps约40秒一轮)|https://speed.cloudflare.com/__down?bytes=10485760"
   "国外-Cloudflare测速100MB|https://speed.cloudflare.com/__down?bytes=104857600"
   "国外-Cloudflare测速1GB|https://speed.cloudflare.com/__down?bytes=1073741824"
   "国外-Ubuntu官网 24.04 ISO|https://releases.ubuntu.com/24.04/ubuntu-24.04.3-desktop-amd64.iso"
@@ -57,7 +58,9 @@ LOOP_MODE="infinite" # infinite | count | minutes
 LOOP_COUNT=0       # count 模式用
 LOOP_MINUTES=60    # minutes 模式用
 INTERVAL=3         # 每轮间隔秒数, 别设 0, 给服务器喘口气, 也避免被限流
-UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+# 注意: 千万别用 Chrome/Mozilla UA! 实测清华镜像对 Chrome UA 的 ISO 完整下载直接回 403 (1 秒就“完成” 15346 字节错误页, 日志里就是 0 MB),
+# 而 curl 默认 / loopdl UA 就回 200 正常下。这就是之前清华源一跑就 0 MB 的真正原因, 不是链接失效, 是 UA 被清华 WAF 挡了。
+UA="loopdl/$LOOPDL_VERSION"
 
 # ---------- 工具函数 ----------
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
@@ -236,36 +239,81 @@ worker_loop() {
   if [[ "$RATE_MBPS" != "0" ]]; then
     limit_bytes=$(mbps_to_bytes "$RATE_MBPS")
   fi
-  local round=0 total_bytes=0 start_ts end_ts
+  local round=0 total_bytes=0 start_ts end_ts fail_streak=0
   start_ts=$(date +%s)
   end_ts=$((start_ts + LOOP_MINUTES * 60))
   trap 'echo "[$(date "+%Y-%m-%d %H:%M:%S")] 已停止: 共 $round 轮, 累计约 $((total_bytes/1024/1024)) MB"; rm -f "$PID_FILE"; exit 0' TERM INT
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] worker 启动, 限速 ${RATE_MBPS} Mbps"
+  # 预估一轮时间: 先 HEAD 取文件大小, 算一下按当前速率要多久, 免得用户看日志半天不动以为卡死了。
+  # 比如 6.25GB 的 ISO 按 2 Mbps 跑, 一轮要约 6.9 小时, 日志在这一轮完成前都不会更新, 属正常, 流量其实一直在跑。
+  if has_cmd curl && [[ "$RATE_MBPS" != "0" ]]; then
+    local head_size est_sec est_text
+    head_size=$(curl -sIL --max-time 15 "$SELECTED_URL" 2>/dev/null | grep -i "^Content-Length:" | tail -1 | awk '{print $2}' | tr -d '\r')
+    if [[ "$head_size" =~ ^[0-9]+$ ]] && (( head_size > 0 )); then
+      est_sec=$(awk -v s="$head_size" -v m="$RATE_MBPS" 'BEGIN{printf "%.0f", s/(m*125000)}')
+      if (( est_sec >= 3600 )); then
+        est_text="$(awk -v s="$est_sec" 'BEGIN{printf "%.1f", s/3600}') 小时"
+      elif (( est_sec >= 60 )); then
+        est_text="$(awk -v s="$est_sec" 'BEGIN{printf "%.0f", s/60}') 分钟"
+      else
+        est_text="${est_sec} 秒"
+      fi
+      echo "  文件大小约 $((head_size/1024/1024)) MB, 按 ${RATE_MBPS} Mbps 约需 $est_text 完成一轮, 期间日志无更新属正常, 流量仍在跑, 可用 cat /proc/net/dev 或 nethogs 检查实时流量。"
+      if (( est_sec >= 3600 )); then
+        echo "  提示: 一轮要超过 1 小时, 想让日志经常动、想快点看到累计量, 建议换个小文件 (比如测速 10MB/100MB) 或把速率调高, 否则停掉重开也没用, 只是换个大文件继续等。"
+      fi
+    else
+      echo "  文件大小未知 (HEAD 没取到 Content-Length), 无法预估一轮时间。"
+    fi
+  fi
   while true; do
     round=$((round+1))
     if [[ "$LOOP_MODE" == "count" ]] && (( round > LOOP_COUNT )); then break; fi
     if [[ "$LOOP_MODE" == "minutes" ]] && (( $(date +%s) >= end_ts )); then break; fi
-    local round_start round_size
+    local round_start round_size http_code curl_exit curl_out
     round_start=$(date +%s)
+    round_size=0; http_code=""; curl_exit=0; curl_out=""
     echo "[第 $round 轮] $(date '+%H:%M:%S') 开始, 限速 ${RATE_MBPS} Mbps, 链接: $SELECTED_URL"
     if has_cmd curl; then
+      # 以前这里用 -s + 2>/dev/null + || echo 0, curl 一失败就只剩 0 MB, 根本看不出是 404、DNS、TLS 还是被重置,
+      # 用户截图里 0 MB / 0s 就是这么来的。现在把 http 码、curl 退出码、错误信息都记到日志里。
       if [[ "$RATE_MBPS" == "0" ]]; then
-        round_size=$(curl -L -A "$UA" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
+        curl_out=$(curl -L -sS -A "$UA" --connect-timeout 15 -o /dev/null -w "%{size_download} %{http_code}" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"); curl_exit=$?
       else
-        round_size=$(curl -L -A "$UA" --limit-rate "$limit_bytes" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
+        curl_out=$(curl -L -sS -A "$UA" --limit-rate "$limit_bytes" --connect-timeout 15 -o /dev/null -w "%{size_download} %{http_code}" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"); curl_exit=$?
       fi
+      round_size=$(echo "$curl_out" | awk '{print $1}')
+      http_code=$(echo "$curl_out" | awk '{print $2}')
     else
       if [[ "$RATE_MBPS" == "0" ]]; then
-        wget -q -O /dev/null --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+        wget -O /dev/null --timeout=15 -U "$UA" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"; curl_exit=$?
       else
-        wget -q -O /dev/null --limit-rate="$limit_bytes" --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+        wget -O /dev/null --limit-rate="$limit_bytes" --timeout=15 -U "$UA" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"; curl_exit=$?
       fi
+      http_code="wget:$curl_exit"
       round_size=0
     fi
     [[ -z "$round_size" ]] && round_size=0
     [[ "$round_size" =~ ^[0-9]+$ ]] || round_size=0
     total_bytes=$((total_bytes + round_size))
-    echo "  本轮完成: 约 $((round_size/1024/1024)) MB, 用时 $(( $(date +%s) - round_start ))s, 累计约 $((total_bytes/1024/1024)) MB"
+    # 失败判定不能只看大小: 404 时 curl 退出码是 0, 但会下回一个 153 字节的错误页, 大小不是 0, http 码却是 404。
+    # 所以 curl 要同时看退出码、http 码 (200/206 才算成功)、大小; wget 没有 http 码, 只看退出码。
+    local failed=0
+    if has_cmd curl; then
+      if [[ "$curl_exit" != "0" ]] || [[ "$http_code" != "200" && "$http_code" != "206" ]] || [[ "$round_size" == "0" ]]; then failed=1; fi
+    else
+      [[ "$curl_exit" != "0" ]] && failed=1
+    fi
+    if [[ "$failed" == "1" ]]; then
+      fail_streak=$((fail_streak+1))
+      echo "  本轮失败: 大小 ${round_size} 字节, http=${http_code:-?}, curl退出码=${curl_exit}, 错误: $(head -c 300 "$CONFIG_DIR/curl_error.txt" 2>/dev/null | tr '\n' ' ')"
+      if (( fail_streak >= 5 )); then
+        echo "  警告: 已连续 ${fail_streak} 轮失败, 链接或网络很可能有问题 (404/DNS/TLS/被重置都可能), 建议先停掉 (菜单 6 / loopdl stop) 检查链接, 本任务仍会继续重试。"
+      fi
+    else
+      fail_streak=0
+      echo "  本轮完成: 约 $((round_size/1024/1024)) MB, 用时 $(( $(date +%s) - round_start ))s, 累计约 $((total_bytes/1024/1024)) MB"
+    fi
     if [[ "$LOOP_MODE" == "count" ]] && (( round >= LOOP_COUNT )); then break; fi
     if [[ "$LOOP_MODE" == "minutes" ]] && (( $(date +%s) >= end_ts )); then break; fi
     sleep "$INTERVAL"
@@ -273,6 +321,37 @@ worker_loop() {
   trap - TERM INT
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] worker 正常结束: 共 $round 轮, 累计约 $((total_bytes/1024/1024)) MB"
   rm -f "$PID_FILE"
+}
+
+# ---------- 测试所有预设是否可用 ----------
+# 只下每个源的前 1MB (Range), 不下完整文件, 几十秒就能知道哪个源在这台机器上真能用、
+# 哪个是 404 / DNS / TLS / 被重置, 而不是凭“日志不动”猜。用法: 菜单 9, 或 loopdl test。
+test_sources() {
+  if ! has_cmd curl; then
+    echo "测试需要 curl, 请先装 curl。"
+    return
+  fi
+  load_presets
+  echo "========== 测试预设链接 (每个只下前 1KB, Cloudflare 小文件除外) =========="
+  echo "注意: 这里不按限速跑, 只看能不能连上、下不下得动, 跟正式跑的速率无关。"
+  echo "Range 用 1KB 不用 1MB: 实测 1MB Range 会让个别镜像超时/403, 1KB 最稳, 能下 1KB 就能下完整文件。"
+  local i=1
+  for p in "${PRESETS[@]}"; do
+    local name="${p%%|*}" url="${p#*|}"
+    local out exit_code http_code size time_total
+    out=$(curl -L -A "$UA" --connect-timeout 10 --max-time 20 -r 0-1023 -o /dev/null -sS -w "%{http_code} %{size_download} %{time_total}" "$url" 2>"$CONFIG_DIR/curl_error.txt"); exit_code=$?
+    http_code=$(echo "$out" | awk '{print $1}')
+    size=$(echo "$out" | awk '{print $2}')
+    time_total=$(echo "$out" | awk '{print $3}')
+    if [[ "$exit_code" == "0" ]] && [[ "$http_code" == "200" || "$http_code" == "206" ]] && [[ -n "$size" && "$size" != "0" ]]; then
+      echo "  [$i] [可用] $name: http=$http_code, 下到 ${size} 字节, 用时 ${time_total}s"
+    else
+      echo "  [$i] [不可用] $name: http=${http_code:-?}, curl退出码=$exit_code, 下到 ${size:-0} 字节, 错误: $(head -c 200 "$CONFIG_DIR/curl_error.txt" 2>/dev/null | tr '\n' ' ')"
+    fi
+    i=$((i+1))
+  done
+  echo "=============================================="
+  echo "如果全是不可用, 把上面 http 码和 curl 退出码发出来, 才能定位是 DNS(6)、连不上(7)、TLS(35)、被重置(56) 还是 404/403, 光说不可用没法修。"
 }
 
 # ---------- 预设管理 ----------
@@ -474,8 +553,9 @@ run_loop() {
     if [[ "$LOOP_MODE" == "count" ]] && (( round > LOOP_COUNT )); then break; fi
     if [[ "$LOOP_MODE" == "minutes" ]] && (( $(date +%s) >= end_ts )); then break; fi
 
-    local round_start round_size
+    local round_start round_size http_code curl_exit curl_out
     round_start=$(date +%s)
+    round_size=0; http_code=""; curl_exit=0; curl_out=""
     if [[ "$RATE_MBPS" == "0" ]]; then
       echo "[第 $round 轮] $(date '+%H:%M:%S') 开始, 不限速"
     else
@@ -485,19 +565,22 @@ run_loop() {
 
     if has_cmd curl; then
       # -L 跟随跳转(官网链接常跳转到CDN), --limit-rate 按字节/秒, 已由 Mbps 换算好
-      # -o /dev/null 不落盘, -w 输出本轮下载字节数
+      # -o /dev/null 不落盘, -w 输出本轮下载字节数和 http 码, 失败时不静默吞掉, 要打印退出码和错误
       if [[ "$RATE_MBPS" == "0" ]]; then
-        round_size=$(curl -L -A "$UA" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
+        curl_out=$(curl -L -sS -A "$UA" --connect-timeout 15 -o /dev/null -w "%{size_download} %{http_code}" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"); curl_exit=$?
       else
-        round_size=$(curl -L -A "$UA" --limit-rate "$limit_bytes" --connect-timeout 15 -o /dev/null -s -w "%{size_download}" "$SELECTED_URL" 2>/dev/null || echo 0)
+        curl_out=$(curl -L -sS -A "$UA" --limit-rate "$limit_bytes" --connect-timeout 15 -o /dev/null -w "%{size_download} %{http_code}" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"); curl_exit=$?
       fi
+      round_size=$(echo "$curl_out" | awk '{print $1}')
+      http_code=$(echo "$curl_out" | awk '{print $2}')
     else
       # wget 备用: --limit-rate 按字节/秒, 0 表示不限
       if [[ "$RATE_MBPS" == "0" ]]; then
-        wget -q -O /dev/null --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+        wget -O /dev/null --timeout=15 -U "$UA" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"; curl_exit=$?
       else
-        wget -q -O /dev/null --limit-rate="$limit_bytes" --timeout=15 -U "$UA" "$SELECTED_URL" 2>/dev/null
+        wget -O /dev/null --limit-rate="$limit_bytes" --timeout=15 -U "$UA" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"; curl_exit=$?
       fi
+      http_code="wget:$curl_exit"
       round_size=0  # wget 不方便直接取字节数, 本轮计 0, 只看轮数
     fi
     [[ -z "$round_size" ]] && round_size=0
@@ -505,7 +588,17 @@ run_loop() {
     [[ "$round_size" =~ ^[0-9]+$ ]] || round_size=0
     total_bytes=$((total_bytes + round_size))
     local round_elapsed=$(( $(date +%s) - round_start ))
-    echo "  本轮完成: 约 $((round_size/1024/1024)) MB, 用时 ${round_elapsed}s, 累计约 $((total_bytes/1024/1024)) MB"
+    local failed=0
+    if has_cmd curl; then
+      if [[ "$curl_exit" != "0" ]] || [[ "$http_code" != "200" && "$http_code" != "206" ]] || [[ "$round_size" == "0" ]]; then failed=1; fi
+    else
+      [[ "$curl_exit" != "0" ]] && failed=1
+    fi
+    if [[ "$failed" == "1" ]]; then
+      echo "  本轮失败: 大小 ${round_size} 字节, http=${http_code:-?}, curl退出码=${curl_exit}, 错误: $(head -c 300 "$CONFIG_DIR/curl_error.txt" 2>/dev/null | tr '\n' ' ')"
+    else
+      echo "  本轮完成: 约 $((round_size/1024/1024)) MB, 用时 ${round_elapsed}s, 累计约 $((total_bytes/1024/1024)) MB"
+    fi
     echo
 
     if [[ "$LOOP_MODE" == "count" ]] && (( round >= LOOP_COUNT )); then break; fi
@@ -527,13 +620,14 @@ run_loop() {
 case "${1:-}" in
   stop) stop_task; exit $? ;;
   status) show_task_status; exit 0 ;;
+  test) test_sources; exit 0 ;;
   log)
     if [[ -f "$LOG_FILE" ]]; then tail -50 "$LOG_FILE"; else echo "还没有日志文件。"; fi
     exit 0
     ;;
   --worker) worker_loop; exit $? ;;
   "") ;;
-  *) echo "用法: loopdl [stop|status|log]"; echo "  不带参数进面板, stop 停后台任务, status 看状态, log 看日志"; exit 1 ;;
+  *) echo "用法: loopdl [stop|status|log|test]"; echo "  不带参数进面板, stop 停后台任务, status 看状态, log 看日志, test 测试所有预设是否可用"; exit 1 ;;
 esac
 
 # ---------- 主菜单 ----------
@@ -569,9 +663,10 @@ while true; do
   echo "  6) 停止下载任务"
   echo "  7) 查看后台任务状态和日志"
   echo "  8) 开始下载 (前台运行, 按 Ctrl+C 停止)"
+  echo "  9) 测试所有预设链接是否可用 (每个只下前 1KB)"
   echo "  0) 退出"
   echo "=================================="
-  read -rp "请选择 [0-8]: " choice
+  read -rp "请选择 [0-9]: " choice
   case "$choice" in
     1) choose_source ;;
     2) choose_rate ;;
@@ -581,6 +676,7 @@ while true; do
     6) stop_task; pause ;;
     7) show_task_status; pause ;;
     8) run_loop ;;
+    9) test_sources; pause ;;
     0) echo "退出, 再见。"; exit 0 ;;
     *) echo "无效选择"; pause ;;
   esac
