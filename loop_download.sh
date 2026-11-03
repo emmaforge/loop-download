@@ -6,6 +6,7 @@
 # 依赖: curl (优先) 或 wget, bash 4+, awk (Debian 默认的 mawk 也行)
 # 支持: 主流 Linux 发行版 Ubuntu / Debian / CentOS / RHEL / Rocky / AlmaLinux / Fedora, amd64/arm64
 # 用法: chmod +x loop_download.sh && ./loop_download.sh
+# 一键呼出 (用 install.sh 装过后, 任意目录都行): loopdl
 # 注意: 国内服务器不要用 raw.githubusercontent.com 下载本脚本, 容易被重置, 用 install.sh 或 jsDelivr (见 README)。
 
 set -u
@@ -18,11 +19,19 @@ mkdir -p "$(dirname "$PRESET_FILE")" 2>/dev/null || true
 # 注意: 荣耀官网的下载链接经常带 token / 会过期, 不要硬编码一个会失效的链接。
 # 正确做法: 去荣耀官网下载页, 右键下载按钮 -> 复制链接地址, 在菜单里选 [自填链接] 粘贴,
 # 跑通一次后选 [保存为预设], 下次就能一键选它。
-# 下面这几个是公开的大文件测速源, 仅作示例 / 备用, 你可以删掉换成自己的。
+# 下面这些是长期可用的大文件, 国内的放前面, 国外的放后面, 你可以删掉换成自己的。
+# 国内预设都实测过 (Range 请求返回 206): 清华 / 华为云 / 网易的 Ubuntu LTS ISO,
+# 都是镜像站长期保留的版本, 不是会天天变的临时链接。阿里云、USTC、中科大腾讯这几个
+# 在境外实测分别返回 302 跳 http 失败 / 403 / 567, 没放进来, 免得在国内以外跑不通。
+# 国外预设保留 Cloudflare 测速和 Ubuntu 官网, 给国外机器用。
 declare -a BUILTIN_PRESETS=(
-  "Cloudflare测速100MB|https://speed.cloudflare.com/__down?bytes=104857600"
-  "Cloudflare测速1GB|https://speed.cloudflare.com/__down?bytes=1073741824"
-  "Ubuntu 24.04 ISO(约5.7GB)|https://releases.ubuntu.com/24.04/ubuntu-24.04.3-desktop-amd64.iso"
+  "国内-清华 Ubuntu 24.04.5.1 ISO(约6.25GB)|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
+  "国内-华为云 Ubuntu 24.04.5.1 ISO(约6.25GB)|https://mirrors.huaweicloud.com/ubuntu-releases/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
+  "国内-网易 Ubuntu 24.04.5.1 ISO(约6.25GB)|https://mirrors.163.com/ubuntu-releases/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
+  "国内-清华 Ubuntu 22.04.5 ISO(约4.76GB)|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/22.04/ubuntu-22.04.5-desktop-amd64.iso"
+  "国外-Cloudflare测速100MB|https://speed.cloudflare.com/__down?bytes=104857600"
+  "国外-Cloudflare测速1GB|https://speed.cloudflare.com/__down?bytes=1073741824"
+  "国外-Ubuntu官网 24.04 ISO|https://releases.ubuntu.com/24.04/ubuntu-24.04.3-desktop-amd64.iso"
 )
 
 # 当前会话配置 (默认值)
