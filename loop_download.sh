@@ -15,7 +15,7 @@ set -u
 # 版本号: 每次改脚本就改这里, install.sh 靠它识别是不是最新版,
 # 防止 jsDelivr 缓存的旧版被当成新版装上 (旧版没有 stop_task 和国内预设, 但也有 RATE_MBPS, 光查 RATE_MBPS 拦不住旧版)。
 # 改脚本时必须同步改 install.sh 里的 EXPECTED_VERSION, 保持一致。
-LOOPDL_VERSION="1.5.2"
+LOOPDL_VERSION="1.5.3"
 
 # ---------- 配置 ----------
 CONFIG_DIR="${HOME}/.config/loop_download"
@@ -532,7 +532,29 @@ run_loop() {
   echo
   echo "按 Ctrl+C 随时停止, 会打印本轮汇总。"
   echo "开始时间: $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "注意: 这是前台模式, 会占住这个终端, 一轮没跑完之前不会回菜单, 想边跑边用菜单请用菜单 4 后台模式。"
   echo "=================================="
+
+  # 前台也预估一轮时间, 否则大文件 + 静默 curl 看起来就像卡死, 其实只是在等一轮跑完。
+  # 比如你这张图: 6.25GB 按 16 Mbps 跑, 一轮约 52 分钟, 开始 1 分多钟没动静是正常的。
+  if has_cmd curl && [[ "$RATE_MBPS" != "0" ]]; then
+    local head_size est_sec est_text
+    head_size=$(curl -sIL --max-time 15 "$SELECTED_URL" 2>/dev/null | grep -i "^Content-Length:" | tail -1 | awk '{print $2}' | tr -d '\r')
+    if [[ "$head_size" =~ ^[0-9]+$ ]] && (( head_size > 0 )); then
+      est_sec=$(awk -v s="$head_size" -v m="$RATE_MBPS" 'BEGIN{printf "%.0f", s/(m*125000)}')
+      if (( est_sec >= 3600 )); then
+        est_text="$(awk -v s="$est_sec" 'BEGIN{printf "%.1f", s/3600}') 小时"
+      elif (( est_sec >= 60 )); then
+        est_text="$(awk -v s="$est_sec" 'BEGIN{printf "%.0f", s/60}') 分钟"
+      else
+        est_text="${est_sec} 秒"
+      fi
+      echo "  文件大小约 $((head_size/1024/1024)) MB, 按 ${RATE_MBPS} Mbps 约需 $est_text 完成一轮, 下面进度条会动, 流量在跑, 不是卡死。"
+    else
+      echo "  文件大小未知, 无法预估一轮时间, 下面进度条会动就说明在跑。"
+    fi
+    echo "=================================="
+  fi
 
   # Mbps 换算一次, 后面每轮直接用字节/秒, 避免每轮重复算
   local limit_bytes=""
@@ -564,12 +586,13 @@ run_loop() {
     echo "  链接: $SELECTED_URL"
 
     if has_cmd curl; then
-      # -L 跟随跳转(官网链接常跳转到CDN), --limit-rate 按字节/秒, 已由 Mbps 换算好
-      # -o /dev/null 不落盘, -w 输出本轮下载字节数和 http 码, 失败时不静默吞掉, 要打印退出码和错误
+      # 前台跟后台不一样: 后台要静默写日志, 前台要让人看见在动, 所以这里用 -# 进度条, stderr 直接打到终端,
+      # 不用 -sS、不重定向到错误文件, 否则进度条和错误都被吞掉, 看起来就是“卡在这里”。
+      # $() 只抓 stdout 的 -w 结果, 进度条走 stderr, 不会进变量, 轮完会正常打印本轮完成/失败。
       if [[ "$RATE_MBPS" == "0" ]]; then
-        curl_out=$(curl -L -sS -A "$UA" --connect-timeout 15 -o /dev/null -w "%{size_download} %{http_code}" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"); curl_exit=$?
+        curl_out=$(curl -L -# -A "$UA" --connect-timeout 15 -o /dev/null -w "%{size_download} %{http_code}" "$SELECTED_URL"); curl_exit=$?
       else
-        curl_out=$(curl -L -sS -A "$UA" --limit-rate "$limit_bytes" --connect-timeout 15 -o /dev/null -w "%{size_download} %{http_code}" "$SELECTED_URL" 2>"$CONFIG_DIR/curl_error.txt"); curl_exit=$?
+        curl_out=$(curl -L -# -A "$UA" --limit-rate "$limit_bytes" --connect-timeout 15 -o /dev/null -w "%{size_download} %{http_code}" "$SELECTED_URL"); curl_exit=$?
       fi
       round_size=$(echo "$curl_out" | awk '{print $1}')
       http_code=$(echo "$curl_out" | awk '{print $2}')
@@ -595,7 +618,7 @@ run_loop() {
       [[ "$curl_exit" != "0" ]] && failed=1
     fi
     if [[ "$failed" == "1" ]]; then
-      echo "  本轮失败: 大小 ${round_size} 字节, http=${http_code:-?}, curl退出码=${curl_exit}, 错误: $(head -c 300 "$CONFIG_DIR/curl_error.txt" 2>/dev/null | tr '\n' ' ')"
+      echo "  本轮失败: 大小 ${round_size} 字节, http=${http_code:-?}, curl退出码=${curl_exit} (curl 前台的错误已在上面进度条处直接显示)"
     else
       echo "  本轮完成: 约 $((round_size/1024/1024)) MB, 用时 ${round_elapsed}s, 累计约 $((total_bytes/1024/1024)) MB"
     fi
