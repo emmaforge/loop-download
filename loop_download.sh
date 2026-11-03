@@ -12,6 +12,11 @@
 
 set -u
 
+# 版本号: 每次改脚本就改这里, install.sh 靠它识别是不是最新版,
+# 防止 jsDelivr 缓存的旧版被当成新版装上 (旧版没有 stop_task 和国内预设, 但也有 RATE_MBPS, 光查 RATE_MBPS 拦不住旧版)。
+# 改脚本时必须同步改 install.sh 里的 EXPECTED_VERSION, 保持一致。
+LOOPDL_VERSION="1.5"
+
 # ---------- 配置 ----------
 CONFIG_DIR="${HOME}/.config/loop_download"
 PRESET_FILE="${CONFIG_DIR}/presets.txt"
@@ -80,6 +85,7 @@ show_config() {
     minutes)  mode_text="持续 ${LOOP_MINUTES} 分钟";;
   esac
   echo "---------------- 当前配置 ----------------"
+  echo "版本   : $LOOPDL_VERSION (面板里看不到 6 / 国内预设, 就是旧版, 重新装)"
   echo "下载源 : $SELECTED_NAME"
   [[ -n "$SELECTED_URL" ]] && echo "链接   : $SELECTED_URL"
   if [[ "$RATE_MBPS" == "0" ]]; then

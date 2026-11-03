@@ -17,6 +17,10 @@ REPO="emmaforge/loop-download"
 FILE="loop_download.sh"
 TARGET="./${FILE}"
 GLOBAL_CMD="/usr/local/bin/loopdl"
+# 期望的脚本版本, 必须跟 loop_download.sh 里的 LOOPDL_VERSION 一致, 改脚本时同步改。
+# 用途: jsDelivr 缓存经常还是旧版, 旧版也有 RATE_MBPS, 光查那个拦不住。
+# 现在要求下载到的文件必须带这个版本号, 旧版缓存会被跳过, 继续试下一个镜像 (最后是 raw, 国外能直连 raw 就一定能拿到新版)。
+EXPECTED_VERSION="1.5"
 
 # ---------- 系统检测 (主流发行版) ----------
 OS_ID="unknown"; OS_NAME="unknown"; ARCH="$(uname -m 2>/dev/null || echo unknown)"
@@ -83,19 +87,25 @@ for url in "${MIRRORS[@]}"; do
   else
     wget -q -O "$TMP_FILE" "$url" 2>/dev/null || true
   fi
-  # 校验: 必须是真正的脚本, 不是代理返回的 HTML 错误页, 也不是空文件。
+  # 校验: 必须是真正的脚本, 不是代理返回的 HTML 错误页, 也不是空文件,
+  # 而且版本必须等于 EXPECTED_VERSION, 否则就是 jsDelivr 缓存的旧版, 不能要。
   # ghproxy 失败时常返回一个 2KB 的 HTML, 这一关正好把它拦下来。
-  if [[ -s "$TMP_FILE" ]] && head -1 "$TMP_FILE" | grep -q "^#!/usr/bin/env bash" && grep -q "RATE_MBPS" "$TMP_FILE"; then
-    echo "下载成功: $url ($(wc -c < "$TMP_FILE") 字节)"
+  if [[ -s "$TMP_FILE" ]] && head -1 "$TMP_FILE" | grep -q "^#!/usr/bin/env bash" && grep -q "LOOPDL_VERSION=\"${EXPECTED_VERSION}\"" "$TMP_FILE"; then
+    echo "下载成功: $url ($(wc -c < "$TMP_FILE") 字节, 版本 $EXPECTED_VERSION)"
     OK=1
     break
   else
-    echo "  这个源不行 (空文件 / HTML / 被重置), 换下一个..."
+    if [[ -s "$TMP_FILE" ]] && grep -q "LOOPDL_VERSION=" "$TMP_FILE"; then
+      echo "  这个源是旧版缓存 (版本不对, 要 $EXPECTED_VERSION), 跳过, 换下一个..."
+    else
+      echo "  这个源不行 (空文件 / HTML / 被重置 / 不是脚本), 换下一个..."
+    fi
   fi
 done
 
 if [[ -z "$OK" ]]; then
-  echo "所有镜像都失败了, 可能原因: 服务器出站网络受限、DNS 异常。"
+  echo "所有镜像都失败了, 可能原因: 服务器出站网络受限、DNS 异常, 或者 jsDelivr 缓存还是旧版且 raw 又被重置 (国内常见)。"
+  echo "  等几分钟让 jsDelivr 缓存刷新后再跑一次, 或者先用已有的旧版, 等新版缓存刷过来再重装。"
   echo "换个办法试试:"
   echo "  git clone https://github.com/${REPO}.git"
   echo "  cd loop-download && chmod +x loop_download.sh && ./loop_download.sh"
