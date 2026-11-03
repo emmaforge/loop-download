@@ -15,7 +15,7 @@ set -u
 # 版本号: 每次改脚本就改这里, install.sh 靠它识别是不是最新版,
 # 防止 jsDelivr 缓存的旧版被当成新版装上 (旧版没有 stop_task 和国内预设, 但也有 RATE_MBPS, 光查 RATE_MBPS 拦不住旧版)。
 # 改脚本时必须同步改 install.sh 里的 EXPECTED_VERSION, 保持一致。
-LOOPDL_VERSION="1.5.3"
+LOOPDL_VERSION="1.5.4"
 
 # ---------- 配置 ----------
 CONFIG_DIR="${HOME}/.config/loop_download"
@@ -37,6 +37,8 @@ SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 # 在境外实测分别返回 302 跳 http 失败 / 403 / 567, 没放进来, 免得在国内以外跑不通。
 # 国外预设保留 Cloudflare 测速和 Ubuntu 官网, 给国外机器用。
 declare -a BUILTIN_PRESETS=(
+  "国内-天翼云桌面安装包(约83MB, netart测速源)|https://desk.ctyun.cn:8999/desktop-prod/software/windows_tob_client/15/64/202030001/CtyunClouddeskUniversal_2.3.0_202030001_x86_20240327104015_Setup.exe"
+  "国内-和彩云图片(约1.1MB, netart测速源, 低速率快速测试)|https://img.mcloud.139.com/material_prod/material_media/20221128/1669626861087.png"
   "国内-清华 Ubuntu 24.04.5.1 ISO(约6.25GB)|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
   "国内-华为云 Ubuntu 24.04.5.1 ISO(约6.25GB)|https://mirrors.huaweicloud.com/ubuntu-releases/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
   "国内-网易 Ubuntu 24.04.5.1 ISO(约6.25GB)|https://mirrors.163.com/ubuntu-releases/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
